@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Analytics — Doc Extract AI</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1000px; margin: 32px auto; padding: 0 16px; color: #222; }
+  h1 { font-size: 22px; } h2 { font-size: 16px; margin-top: 32px; }
+  nav a { margin-right: 14px; font-size: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 16px; }
+  .card { background: #f7f8fa; border-radius: 8px; padding: 14px; }
+  .card .val { font-size: 24px; font-weight: 600; }
+  .card .lbl { font-size: 12px; color: #666; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+  th, td { text-align: left; padding: 7px; border-bottom: 1px solid #eee; }
+  th { color: #666; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  .warn { color: #b45309; }
+  canvas { margin-top: 10px; }
+  .empty { color: #888; font-size: 14px; padding: 10px 0; }
+</style>
+</head>
+<body>
+  <h1>Spend Analytics</h1>
+  <nav><a href="/">← Documents</a><a href="/api/analytics/export.csv">Download CSV</a></nav>
+
+  <div class="cards" id="kpis"></div>
+
+  <h2>Monthly spend</h2>
+  <canvas id="spendChart" height="90"></canvas>
+
+  <h2>Top vendors by spend</h2>
+  <table id="vendorTable">
+    <thead><tr><th>Vendor</th><th>Total</th><th>Invoices</th><th>Avg</th><th>Share</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Spend anomalies <span style="font-weight:400;font-size:13px;color:#888">(&gt;2σ above vendor average)</span></h2>
+  <table id="anomalyTable">
+    <thead><tr><th>Vendor</th><th>Invoice</th><th>Amount</th><th>Vendor avg</th><th>σ</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Possible duplicate payments</h2>
+  <table id="dupTable">
+    <thead><tr><th>Vendor</th><th>Amount</th><th>Invoices</th><th>Days apart</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Pipeline quality</h2>
+  <div id="quality"></div>
+
+<script>
+const fmt = n => n == null ? '-' : n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+
+function fill(tableId, rows, render) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">Nothing to show yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(render).join('');
+}
+
+async function load() {
+  const [monthly, vendors, anomalies, dups, quality] = await Promise.all([
+    fetch('/api/analytics/spend/monthly').then(r => r.json()),
+    fetch('/api/analytics/vendors').then(r => r.json()),
+    fetch('/api/analytics/anomalies').then(r => r.json()),
+    fetch('/api/analytics/duplicates').then(r => r.json()),
+    fetch('/api/analytics/quality').then(r => r.json())
+  ]);
+
+  const totalSpend = monthly.reduce((s, m) => s + m.totalSpend, 0);
+  const totalInvoices = monthly.reduce((s, m) => s + m.invoiceCount, 0);
+
+  document.getElementById('kpis').innerHTML = `
+    <div class="card"><div class="val">₹${fmt(totalSpend)}</div><div class="lbl">Total spend</div></div>
+    <div class="card"><div class="val">${fmt(totalInvoices)}</div><div class="lbl">Invoices</div></div>
+    <div class="card"><div class="val">${fmt(vendors.length)}</div><div class="lbl">Vendors</div></div>
+    <div class="card"><div class="val">${quality.straightThroughRate}%</div><div class="lbl">Straight-through rate</div></div>
+    <div class="card"><div class="val ${anomalies.length ? 'warn' : ''}">${anomalies.length}</div><div class="lbl">Anomalies flagged</div></div>
+  `;
+
+  new Chart(document.getElementById('spendChart'), {
+    type: 'bar',
+    data: {
+      labels: monthly.map(m => m.month),
+      datasets: [{ label: 'Spend', data: monthly.map(m => m.totalSpend), backgroundColor: '#3b82f6' }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  });
+
+  fill('vendorTable', vendors, v => `<tr>
+    <td>${v.vendor}</td><td>₹${fmt(v.totalSpend)}</td><td>${v.invoiceCount}</td>
+    <td>₹${fmt(v.avgInvoiceValue)}</td><td>${v.shareOfSpend}%</td></tr>`);
+
+  fill('anomalyTable', anomalies, a => `<tr>
+    <td>${a.vendor}</td><td>${a.invoiceNumber || '-'}</td>
+    <td class="warn">₹${fmt(a.amount)}</td><td>₹${fmt(a.vendorMean)}</td><td>${a.deviations}</td></tr>`);
+
+  fill('dupTable', dups, d => `<tr>
+    <td>${d.vendor}</td><td>₹${fmt(d.amount)}</td>
+    <td>${d.first.invoiceNumber || '?'} / ${d.second.invoiceNumber || '?'}</td>
+    <td>${d.daysApart}</td></tr>`);
+
+  document.getElementById('quality').innerHTML = `
+    <p style="font-size:14px">Failure rate: <strong>${quality.failureRate}%</strong> of ${quality.totalDocuments} documents</p>
+    <table><thead><tr><th>Most frequent validation issue</th><th>Count</th></tr></thead><tbody>
+      ${quality.topValidationIssues.length
+        ? quality.topValidationIssues.map(i => `<tr><td>${i.issue}</td><td>${i.count}</td></tr>`).join('')
+        : '<tr><td colspan="2" class="empty">No issues logged yet.</td></tr>'}
+    </tbody></table>
+    <table><thead><tr><th>Most corrected field</th><th>Count</th></tr></thead><tbody>
+      ${quality.mostCorrectedFields.length
+        ? quality.mostCorrectedFields.map(f => `<tr><td>${f.field}</td><td>${f.count}</td></tr>`).join('')
+        : '<tr><td colspan="2" class="empty">No corrections yet.</td></tr>'}
+    </tbody></table>
+  `;
+}
+
+load().catch(err => {
+  document.body.insertAdjacentHTML('beforeend', `<p class="warn">Failed to load analytics: ${err.message}</p>`);
+});
+</script>
+</body>
+</html>

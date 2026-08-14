@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Doc Extract AI</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 16px; color: #222; }
+  h1 { font-size: 22px; }
+  #dropzone { border: 2px dashed #999; border-radius: 8px; padding: 30px; text-align: center; cursor: pointer; }
+  #dropzone.drag { background: #f0f7ff; border-color: #3b82f6; }
+  table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+  .status { padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+  .status.validated { background: #dcfce7; color: #166534; }
+  .status.needs_review { background: #fef3c7; color: #92400e; }
+  .status.failed { background: #fee2e2; color: #991b1b; }
+  .status.queued, .status.processing { background: #e0e7ff; color: #3730a3; }
+  #detail { margin-top: 20px; display: none; background: #fafafa; border-radius: 8px; padding: 16px; }
+  input.field-edit { width: 140px; }
+</style>
+</head>
+<body>
+  <h1>Document Extraction Pipeline</h1>
+  <nav style="margin-bottom:16px"><a href="/analytics.html">Analytics dashboard →</a></nav>
+  <div id="dropzone">Drop an invoice PDF/image here, or click to choose a file</div>
+  <input type="file" id="fileInput" accept=".pdf,.png,.jpg,.jpeg" style="display:none">
+
+  <table id="docTable">
+    <thead><tr><th>File</th><th>Status</th><th>Vendor</th><th>Total</th><th>Issues</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="detail"></div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+
+dropzone.onclick = () => fileInput.click();
+dropzone.ondragover = (e) => { e.preventDefault(); dropzone.classList.add('drag'); };
+dropzone.ondragleave = () => dropzone.classList.remove('drag');
+dropzone.ondrop = (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+};
+fileInput.onchange = () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); };
+
+async function uploadFile(file) {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/api/upload', { method: 'POST', body: form });
+  if (!res.ok) { alert('upload failed'); return; }
+  loadDocs();
+}
+
+async function loadDocs() {
+  const res = await fetch('/api/documents');
+  const docs = await res.json();
+  const tbody = document.querySelector('#docTable tbody');
+  tbody.innerHTML = '';
+  docs.forEach(doc => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${doc.originalName}</td>
+      <td><span class="status ${doc.status}">${doc.status}</span></td>
+      <td>${doc.extracted?.vendorName || '-'}</td>
+      <td>${doc.extracted?.total ?? '-'}</td>
+      <td>${(doc.validationIssues || []).length}</td>
+    `;
+    tr.onclick = () => showDetail(doc._id);
+    tbody.appendChild(tr);
+  });
+}
+
+async function showDetail(id) {
+  const res = await fetch(`/api/documents/${id}`);
+  const doc = await res.json();
+  const el = document.getElementById('detail');
+  el.style.display = 'block';
+
+  const issuesHtml = (doc.validationIssues || []).map(i => `<li>${i}</li>`).join('');
+  const fields = doc.extracted || {};
+
+  el.innerHTML = `
+    <h3>${doc.originalName}</h3>
+    <p>Status: <span class="status ${doc.status}">${doc.status}</span></p>
+    ${issuesHtml ? `<p><strong>Flagged issues:</strong></p><ul>${issuesHtml}</ul>` : ''}
+    <table>
+      ${Object.entries(fields).filter(([k]) => k !== 'lineItems').map(([field, val]) => `
+        <tr>
+          <td>${field}</td>
+          <td><input class="field-edit" data-field="${field}" value="${val ?? ''}"></td>
+          <td><button onclick="correctField('${doc._id}','${field}')">Save</button></td>
+        </tr>
+      `).join('')}
+    </table>
+  `;
+}
+
+async function correctField(docId, field) {
+  const input = document.querySelector(`input[data-field="${field}"]`);
+  await fetch(`/api/documents/${docId}/correct`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ field, newValue: input.value })
+  });
+  loadDocs();
+  showDetail(docId);
+}
+
+loadDocs();
+setInterval(loadDocs, 4000); // poll for status updates while jobs process
+</script>
+</body>
+</html>
