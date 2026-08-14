@@ -1,0 +1,5 @@
+PORT=5001
+MONGO_URI=mongodb://127.0.0.1:27017/doc-extract-ai
+REDIS_URL=redis://127.0.0.1:6379
+GROQ_API_KEY=your_groq_api_key_here
+UPLOAD_DIR=uploads
